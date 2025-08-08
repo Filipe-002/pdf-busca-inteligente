@@ -32,3 +32,10 @@ def extract_all_texts():
             print(f"Erro em {pdf_file.name}: {e}")
 
     return resultados
+
+if __name__ == "__main__":
+    resultados = extract_all_texts()
+
+    print("\nResumo:")
+    for nome, conteudo in resultados.items():
+        print(f"→ {nome}: {len(conteudo)} caracteres extraídos")
