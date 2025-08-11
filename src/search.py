@@ -109,11 +109,17 @@ def save_index(index: BM25Index):
     print(f"Índice BM25 salvo em: {INDEX_PATH}")
 
 def load_index() -> BM25Index:
-    if not INDEX_PATH.exists():
-        raise FileNotFoundError("Índice não encontrado. Rode: python src/search_nltk.py --build")
-    with open(INDEX_PATH, "rb") as f:
-        return pickle.load(f)
-
+    try:
+        with open(INDEX_PATH, "rb") as f:
+            return pickle.load(f)
+    except Exception as e:
+        print(f"[WARN] Falha ao carregar índice BM25 ({e}). Recriando a partir dos PDFs...")
+        from extract import extract_all_texts
+        docs = extract_all_texts(save_txt=False)
+        idx = BM25Index()
+        idx.build(docs)
+        save_index(idx)
+        return idx
 
 def make_snippet(text: str, query: str, width: int = 240) -> str:
     q_tokens = [t for t in word_tokenize(query, language="portuguese") if t.lower() not in STOPWORDS_PT]
