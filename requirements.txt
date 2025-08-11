@@ -1,0 +1,7 @@
+pymupdf
+scikit-learn
+numpy
+joblib
+nltk
+streamlit
+ollama
