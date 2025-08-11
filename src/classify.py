@@ -12,9 +12,6 @@ from sklearn.model_selection import train_test_split
 
 from extract import extract_all_texts, extract_text
 
-# -----------------------------
-# Configs / Constantes
-# -----------------------------
 MODELS_DIR = Path(__file__).parent.parent / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -38,9 +35,6 @@ DEFAULT_VECTORIZER = TfidfVectorizer(
     min_df=1
 )
 
-# -----------------------------
-# Dataset
-# -----------------------------
 def load_labels(labels_path: Path) -> Dict[str, str]:
     if not labels_path.exists():
         raise FileNotFoundError(f"labels.json não encontrado em: {labels_path}")
@@ -55,10 +49,7 @@ def build_dataset(
     labels_map: Dict[str, str],
     include_filename_feature: bool = True
 ) -> Tuple[List[str], List[str], List[str]]:
-    """
-    Retorna (X_texts, y_labels, used_filenames) apenas dos PDFs que têm rótulo em labels_map.
-    Se include_filename_feature=True, concatena o nome do arquivo ao início do texto.
-    """
+
     X, y, used = [], [], []
     for fname, text in textos.items():
         if fname in labels_map:
@@ -71,25 +62,18 @@ def build_dataset(
         raise ValueError("Nenhum texto com rótulo correspondente. Verifique os nomes em labels.json.")
     return X, y, used
 
-# Treino do modelo Naive Byers
-
 def train_and_eval(
     X_texts: List[str],
     y_labels: List[str],
     test_size: float = 0.3,
     random_state: int = 42
 ):
-    """
-    Treina o classificador Naive Bayes e avalia (se possível).
-    Retorna (vectorizer, label_encoder, model).
-    """
     le = LabelEncoder()
     y = le.fit_transform(y_labels)
 
     vectorizer = DEFAULT_VECTORIZER
     X = vectorizer.fit_transform(X_texts)
 
-    # Split estratificado (se possível)
     can_split = True
     try:
         X_train, X_test, y_train, y_test = train_test_split(
@@ -116,9 +100,6 @@ def train_and_eval(
 
     return vectorizer, le, model
 
-# -----------------------------
-# Persistência
-# -----------------------------
 def save_artifacts(vectorizer, label_encoder, model, prefix: str = "nb"):
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(vectorizer, MODELS_DIR / f"{prefix}_vectorizer.joblib")
@@ -132,9 +113,6 @@ def load_artifacts(prefix: str = "nb"):
     model = joblib.load(MODELS_DIR / f"{prefix}_model.joblib")
     return vectorizer, label_encoder, model
 
-# -----------------------------
-# Predição
-# -----------------------------
 def predict_text(text: str, vectorizer, label_encoder, model, return_proba: bool = True):
     X = vectorizer.transform([text])
     y_pred = model.predict(X)[0]
@@ -148,18 +126,13 @@ def predict_text(text: str, vectorizer, label_encoder, model, return_proba: bool
         return label, None
 
 def predict_pdf_file(pdf_filename: str, vectorizer, label_encoder, model, prior_weight: float = 1.25):
-    """
-    Classifica um PDF usando texto + prior pelo nome do arquivo.
-    prior_weight > 1 aumenta a prob. da classe encontrada no nome (ex.: 'Portaria_...')
-    """
+
     base = _filename_as_text(pdf_filename)
     text = extract_text(pdf_filename)
     text = base + "\n" + text
 
-    # vetoriza
     X = vectorizer.transform([text])
 
-    # proba original do modelo
     if hasattr(model, "predict_proba"):
         proba = model.predict_proba(X)[0]
     else:
@@ -168,7 +141,6 @@ def predict_pdf_file(pdf_filename: str, vectorizer, label_encoder, model, prior_
         return label, None
 
     classes = list(label_encoder.classes_)
-    # "hint" pelo nome
     hint = None
     if "lei" in base:
         hint = "Lei"
@@ -176,15 +148,12 @@ def predict_pdf_file(pdf_filename: str, vectorizer, label_encoder, model, prior_
         hint = "Portaria"
     elif "resolucao" in base or "resolução" in base:
         hint = "Resolução"
-
-    # prior leve
     if hint in classes:
         idx = classes.index(hint)
         proba = proba.copy()
         proba[idx] *= prior_weight
         proba = proba / proba.sum()
 
-    # decisão com threshold
     i = int(proba.argmax())
     label = classes[i]
     confidence = float(proba[i])
@@ -217,9 +186,6 @@ def predict_all_in_data(vectorizer, label_encoder, model, save_csv: bool = True,
                 w.writerow([r[0], r[1], f"{r[2]:.4f}" if r[2] is not None else ""])
         print(f"\n[OK] Predições salvas em: {out_csv}")
 
-# -----------------------------
-# CLI
-# -----------------------------
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Classificação de PDFs por ML (TF-IDF + Naive Bayes)")

@@ -21,9 +21,6 @@ def strip_reasoning(text: str) -> str:
     return text.strip()
 
 def _get_model_ctx_tokens(model_name: str, override_ctx: int | None = None) -> int:
-    """
-    Tenta descobrir o tamanho do contexto (em tokens) do modelo no Ollama.
-    """
     if override_ctx:
         return int(override_ctx)
     try:
@@ -40,14 +37,9 @@ def _get_model_ctx_tokens(model_name: str, override_ctx: int | None = None) -> i
     return 4096
 
 def _tokens_to_chars(tokens: int, chars_per_token: float = 3.5) -> int:
-    """Heurística PT-BR: ~3.5 chars/token."""
     return int(tokens * chars_per_token)
 
 def _budget_for_context(model_name: str, top_docs: int, override_ctx: int | None = None) -> tuple[int, int]:
-    """
-    Retorna (hard_limit_total_chars, max_chars_per_doc) adaptados ao modelo escolhido.
-    Reservamos ~70% do contexto para o 'Contexto' (o resto fica para instruções e resposta).
-    """
     ctx_tokens = _get_model_ctx_tokens(model_name, override_ctx=override_ctx)
     total_chars = _tokens_to_chars(ctx_tokens)
     hard_limit_total = int(total_chars * 0.70) 
