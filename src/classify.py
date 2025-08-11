@@ -5,7 +5,6 @@ from typing import Dict, List, Tuple
 import joblib
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import classification_report, accuracy_score
@@ -17,7 +16,7 @@ from extract import extract_all_texts, extract_text
 # Configs / Constantes
 # -----------------------------
 MODELS_DIR = Path(__file__).parent.parent / "models"
-MODELS_DIR.mkdir(exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 STOPWORDS_PT = [
     "a","à","às","ao","aos","as","o","os","de","do","da","dos","das","no","na","nos","nas",
@@ -30,12 +29,11 @@ STOPWORDS_PT = [
     "todo","toda","todos","todas","mesmo","mesma","mesmos","mesmas","cada","outro","outra","outros","outras",
     "seja","sejam","seriam","seria","deste","desta","destes","destas","neste","nesta","nestes","nestas"
 ]
-# (opcional) garantir ordem estável:
 STOPWORDS_PT = sorted(set(STOPWORDS_PT))
 
 DEFAULT_VECTORIZER = TfidfVectorizer(
     lowercase=True,
-    stop_words=STOPWORDS_PT,   # agora é list
+    stop_words=STOPWORDS_PT,
     ngram_range=(1, 3),
     min_df=1
 )
@@ -49,9 +47,7 @@ def load_labels(labels_path: Path) -> Dict[str, str]:
     return json.loads(labels_path.read_text(encoding="utf-8"))
 
 def _filename_as_text(fname: str) -> str:
-    # Usa underscores e números como tokens úteis; remove extensão
     base = fname.rsplit(".", 1)[0]
-    # Troca underscores por espaço e põe o nome em caixa baixa
     return base.replace("_", " ").lower()
 
 def build_dataset(
@@ -75,19 +71,17 @@ def build_dataset(
         raise ValueError("Nenhum texto com rótulo correspondente. Verifique os nomes em labels.json.")
     return X, y, used
 
-# -----------------------------
-# Treino
-# -----------------------------
+# Treino do modelo Naive Byers
+
 def train_and_eval(
     X_texts: List[str],
     y_labels: List[str],
-    model_type: str = "logreg",
     test_size: float = 0.3,
     random_state: int = 42
 ):
     """
-    Treina o classificador e avalia (se possível). Retorna (vectorizer, label_encoder, model).
-    model_type: 'logreg' ou 'nb'
+    Treina o classificador Naive Bayes e avalia (se possível).
+    Retorna (vectorizer, label_encoder, model).
     """
     le = LabelEncoder()
     y = le.fit_transform(y_labels)
@@ -95,7 +89,7 @@ def train_and_eval(
     vectorizer = DEFAULT_VECTORIZER
     X = vectorizer.fit_transform(X_texts)
 
-    # Tenta split estratificado; se não der (poucos exemplos), treina em 100% e avisa
+    # Split estratificado (se possível)
     can_split = True
     try:
         X_train, X_test, y_train, y_test = train_test_split(
@@ -106,13 +100,8 @@ def train_and_eval(
         X_train, y_train = X, y
         X_test = y_test = None
 
-    # Modelo
-    if model_type == "nb":
-        model = MultinomialNB()
-    else:
-        # class_weight="balanced" ajuda em classes desbalanceadas
-        model = LogisticRegression(max_iter=400, class_weight="balanced")
 
+    model = MultinomialNB()
     model.fit(X_train, y_train)
 
     if can_split:
@@ -130,13 +119,14 @@ def train_and_eval(
 # -----------------------------
 # Persistência
 # -----------------------------
-def save_artifacts(vectorizer, label_encoder, model, prefix: str = "clf"):
+def save_artifacts(vectorizer, label_encoder, model, prefix: str = "nb"):
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(vectorizer, MODELS_DIR / f"{prefix}_vectorizer.joblib")
     joblib.dump(label_encoder, MODELS_DIR / f"{prefix}_label_encoder.joblib")
     joblib.dump(model, MODELS_DIR / f"{prefix}_model.joblib")
-    print(f"\nModelos salvos em: {MODELS_DIR}/ {prefix}_*.joblib")
+    print(f"\n[OK] Artefatos salvos em {MODELS_DIR} (prefixo: {prefix}_*.joblib)")
 
-def load_artifacts(prefix: str = "clf"):
+def load_artifacts(prefix: str = "nb"):
     vectorizer = joblib.load(MODELS_DIR / f"{prefix}_vectorizer.joblib")
     label_encoder = joblib.load(MODELS_DIR / f"{prefix}_label_encoder.joblib")
     model = joblib.load(MODELS_DIR / f"{prefix}_model.joblib")
@@ -171,15 +161,14 @@ def predict_pdf_file(pdf_filename: str, vectorizer, label_encoder, model, prior_
 
     # proba original do modelo
     if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(X)[0]  # ndarray shape (n_classes,)
+        proba = model.predict_proba(X)[0]
     else:
-        # fallback se for um modelo sem proba
         y_pred = model.predict(X)[0]
         label = label_encoder.inverse_transform([y_pred])[0]
         return label, None
 
     classes = list(label_encoder.classes_)
-    # identifica “hint” pelo nome
+    # "hint" pelo nome
     hint = None
     if "lei" in base:
         hint = "Lei"
@@ -188,24 +177,23 @@ def predict_pdf_file(pdf_filename: str, vectorizer, label_encoder, model, prior_
     elif "resolucao" in base or "resolução" in base:
         hint = "Resolução"
 
-    # aplica prior leve
+    # prior leve
     if hint in classes:
         idx = classes.index(hint)
         proba = proba.copy()
         proba[idx] *= prior_weight
-        proba = proba / proba.sum()  # renormaliza
+        proba = proba / proba.sum()
 
-    # decide
+    # decisão com threshold
     i = int(proba.argmax())
     label = classes[i]
     confidence = float(proba[i])
-    THRESH = 0.45  # ajuste a gosto
+    THRESH = 0.45
     if confidence < THRESH:
         return "Desconhecido", confidence
     return label, confidence
 
-
-def predict_all_in_data(vectorizer, label_encoder, model, save_csv: bool = True):
+def predict_all_in_data(vectorizer, label_encoder, model, save_csv: bool = True, prefix_csv="predicoes"):
     data_dir = Path(__file__).parent.parent / "data"
     pdfs = sorted(list(data_dir.glob("*.pdf")))
     results = []
@@ -221,26 +209,24 @@ def predict_all_in_data(vectorizer, label_encoder, model, save_csv: bool = True)
 
     if save_csv and results:
         import csv
-        out_csv = Path(__file__).parent.parent / "predicoes.csv"
+        out_csv = Path(__file__).parent.parent / f"{prefix_csv}.csv"
         with open(out_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["arquivo", "classe", "confianca"])
             for r in results:
                 w.writerow([r[0], r[1], f"{r[2]:.4f}" if r[2] is not None else ""])
-        print(f"\nPredições salvas em: {out_csv}")
+        print(f"\n[OK] Predições salvas em: {out_csv}")
 
 # -----------------------------
 # CLI
 # -----------------------------
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Classificação de PDFs por ML (TF-IDF + LogReg/NB) com melhorias")
+    parser = argparse.ArgumentParser(description="Classificação de PDFs por ML (TF-IDF + Naive Bayes)")
     parser.add_argument("--labels", type=str, default=str(Path(__file__).parent.parent / "labels.json"),
                         help="Caminho para labels.json (arquivo→classe)")
-    parser.add_argument("--model", type=str, choices=["logreg", "nb"], default="logreg",
-                        help="Tipo de modelo: Logistic Regression (logreg) ou Naive Bayes (nb)")
-    parser.add_argument("--prefix", type=str, default="clf", help="Prefixo dos artefatos salvos em /models")
-    parser.add_argument("--train", action="store_true", help="Treinar (e avaliar) o modelo")
+    parser.add_argument("--prefix", type=str, default="nb", help="Prefixo dos artefatos salvos em /models")
+    parser.add_argument("--train", action="store_true", help="Treinar (e avaliar) o modelo Naive Bayes")
     parser.add_argument("--predict-all", action="store_true", help="Classificar todos os PDFs em /data")
     parser.add_argument("--predict-one", type=str, help="Classificar um PDF específico (nome do arquivo em /data)")
     args = parser.parse_args()
@@ -256,16 +242,14 @@ def main():
         X_texts, y_labels, used = build_dataset(textos, labels_map, include_filename_feature=True)
         print(f"Treinando com {len(X_texts)} documentos rotulados: {used}")
 
-        vectorizer, le, model = train_and_eval(
-            X_texts, y_labels, model_type=args.model
-        )
+        vectorizer, le, model = train_and_eval(X_texts, y_labels)
         save_artifacts(vectorizer, le, model, prefix=args.prefix)
 
     if args.predict_all or args.predict_one:
         vectorizer, le, model = load_artifacts(prefix=args.prefix)
 
     if args.predict_all:
-        predict_all_in_data(vectorizer, le, model, save_csv=True)
+        predict_all_in_data(vectorizer, le, model, save_csv=True, prefix_csv="predicoes")
 
     if args.predict_one:
         label, conf = predict_pdf_file(args.predict_one, vectorizer, le, model)

@@ -1,39 +1,32 @@
-# src/app_streamlit.py
 import re
 import textwrap
 import streamlit as st
 
-# ==== integra seus módulos ====
 from search import build_from_data, query_docs, make_snippet
 from extract import extract_all_texts
 
-# Ollama client (LLM local)
 try:
     import ollama
 except Exception:
     ollama = None
 
-st.set_page_config(page_title="PDFs: Busca + Chat (local)", page_icon="📄", layout="wide")
-st.title("📄 PDFs: Busca (NLTK+BM25) + Chat RAG (Ollama)")
+st.set_page_config(page_title="PDFScanner: Pergunte à IA!", page_icon="📄", layout="wide")
+st.title("📄 PDFScanner: Pergunte à IA!")
 
-st.caption(
-    "• Busca clássica em PT-BR com NLTK (stopwords/stemming) e BM25  • "
-    "Chat local via Ollama (modelo leve) respondendo **apenas com base** nos PDFs"
-)
+MODEL_NAME = "deepseek-r1:1.5b"
+TOP_N = 9999
+CTX_CHARS = 800
+HARD_LIMIT_TOTAL = 4000
 
-# ======== Sidebar ========
-st.sidebar.header("Configurações")
-top_n = st.sidebar.slider("Top-N documentos", 1, 10, 5)
-ctx_chars = st.sidebar.slider("Caracteres por documento no contexto (chat)", 300, 2000, 900, 100)
-model_name = st.sidebar.text_input("Modelo do Ollama", value="deepseek-r1:1.5b", help="Use o nome que aparece em `ollama list`")
-hard_limit_total = st.sidebar.slider("Limite total de contexto", 1000, 8000, 4000, 250)
+def strip_reasoning(text: str) -> str:
+    if not text:
+        return text
+    text = re.sub(r'(?is)<think>.*?</think>\s*', '', text)
+    text = re.sub(r'(?is)<think>.*$', '', text)
+    text = re.sub(r'(?is)^.*?</think>\s*', '', text)
+    text = re.sub(r'(?im)^\s*(thoughts?|reasoning|scratchpad)\s*:.*?(?:\n\s*\n|$)', '\n', text)
+    return text.strip()
 
-if st.sidebar.button("🔧 Reconstruir índice agora"):
-    with st.spinner("Reconstruindo índice BM25 a partir dos PDFs..."):
-        build_from_data()
-    st.success("Índice reconstruído com sucesso!")
-
-# ======== Helpers (highlight + contexto) ========
 def highlight(text: str, terms):
     out = text
     for t in terms:
@@ -43,7 +36,6 @@ def highlight(text: str, terms):
     return out
 
 def build_context_from_hits(question: str, hits, per_doc_chars: int, total_limit: int):
-    """Monta um contexto compacto a partir dos documentos top-N (com limite total)."""
     docs_texts = extract_all_texts(save_txt=False)
     parts = []
     used = 0
@@ -52,7 +44,6 @@ def build_context_from_hits(question: str, hits, per_doc_chars: int, total_limit
         raw = docs_texts.get(fname, "")
         if not raw:
             continue
-        # Usa snippet focado na pergunta para melhorar relevância do contexto
         snip = make_snippet(raw, question, width=per_doc_chars)
         chunk = f"[DOC: {fname}]\n{snip}".strip()
         if total + len(chunk) > total_limit:
@@ -87,53 +78,35 @@ def ask_llm(question: str, hits, model: str, per_doc_chars: int, total_limit: in
         resp = ollama.chat(
             model=model,
             messages=[
-                {"role": "system", "content": "Você é técnico, conciso e cita fontes quando fizer sentido."},
+                {"role": "system", "content": "Você é técnico, conciso. NÃO mostre raciocínio (não use <think>). Responda apenas o resultado final e cite fontes quando fizer sentido."},
                 {"role": "user", "content": prompt}
             ],
         )
-        return resp["message"]["content"], context
+        return strip_reasoning(resp["message"]["content"]), context
     except Exception as e:
         return f"[ERRO ao chamar o modelo '{model}']: {e}", ""
 
-# ======== Layout com abas ========
-tab_busca, tab_chat = st.tabs(["🔎 Busca", "💬 Chat"])
-
-with tab_busca:
-    st.subheader("Busca por linguagem natural (NLTK + BM25)")
-    q = st.text_input("O que você procura? (ex.: diretrizes da educação básica, competências do CNE, etc.)", key="q_busca")
-    col1, col2 = st.columns([1, 3])
-    run_search = col1.button("Buscar", type="primary", key="btn_busca")
-
-    if run_search:
-        with st.spinner("Consultando índice..."):
-            hits = query_docs(q, top_n=top_n)
-        if not hits:
-            st.warning("Nenhum resultado encontrado. Tente reformular a consulta.")
-        else:
-            # termos para highlight (simples: separa por espaços)
-            terms = [t for t in re.split(r"\s+", q.strip()) if len(t) > 1][:6]
-            st.write(f"**{len(hits)}** documento(s) mais relevantes:\n")
-            for fname, score, snip in hits:
-                with st.expander(f"📄 {fname}  —  BM25={score:.4f}", expanded=False):
-                    st.markdown(highlight(snip, terms))
-
-with tab_chat:
-    st.subheader("Chat local (RAG com BM25 → Ollama)")
-    q_chat = st.text_area("Pergunta para o chat:", height=100, placeholder="Ex.: Quais são as principais diretrizes da LDB 9.394?")
-    run_chat = st.button("Perguntar ao LLM", type="primary", key="btn_chat")
-
-    if run_chat:
+st.subheader("💬 Chat local (RAG com BM25 → Ollama)")
+q_chat = st.text_area("Pergunte ao chat:", height=100, placeholder="Ex.: Quais são as principais diretrizes da LDB 9.394?")
+run_chat = st.button("Perguntar", type="primary", key="btn_chat")
+if run_chat:
+    if not q_chat.strip():
+        st.warning("Digite uma pergunta primeiro.")
+    else:
         with st.spinner("Buscando trechos e gerando resposta..."):
-            hits = query_docs(q_chat, top_n=top_n)
+            try:
+                hits = query_docs(q_chat, top_n=TOP_N)
+            except Exception as e:
+                st.error(f"Erro ao consultar índice BM25: {e}")
+                hits = []
             if not hits:
                 st.warning("Nenhum contexto encontrado para a pergunta.")
             else:
                 answer, used_context = ask_llm(
-                    q_chat, hits, model=model_name,
-                    per_doc_chars=ctx_chars, total_limit=hard_limit_total
+                    q_chat, hits, model=MODEL_NAME,
+                    per_doc_chars=CTX_CHARS, total_limit=HARD_LIMIT_TOTAL
                 )
                 st.markdown("**Resposta:**")
                 st.write(answer)
-                with st.expander("🔍 Contexto usado (fontes)"):
+                with st.expander("🔎 Contexto usado (fontes)"):
                     st.code(used_context)
-                st.caption("Dica: ajuste 'Top-N documentos', 'Caracteres por documento' e 'Limite total' na barra lateral se a resposta vier muito vaga ou truncada.")
